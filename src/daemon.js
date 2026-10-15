@@ -306,17 +306,38 @@ async function evalViaPlugin(conn, code, retryCount = 0) {
 // to a CDP port that is not there and reporting "fetch failed".
 let pluginSeen = false;
 const seenFiles = new Set(); // lowercased names of files whose plugin has connected
+const closedAt = new Map(); // lowercased file name -> when its plugin last disconnected
+// A plugin back within this long was dropped while Figma was busy; one gone
+// longer was stopped (FigCli → Disconnect, another plugin, file closed).
+const DROP_WINDOW_MS = parseInt(process.env.DAEMON_DROP_WINDOW_MS) || 10000;
 const PLUGIN_GONE = 'Plugin disconnected';
-const pluginGone = (file) => new Error(
-  `${PLUGIN_GONE}${fileKey(file) ? ` for "${file}"` : ''}: Figma dropped the FigCli plugin while it was busy ` +
-  '(a heavy export can take tens of seconds). It reconnects by itself within a few seconds; run the command again. ' +
-  'To build context without an export use `figma-cli read <id>`.'
-);
+const pluginGone = (file) => {
+  const key = fileKey(file);
+  const at = key ? [...closedAt].filter(([f]) => f.includes(key)).map(([, t]) => t).sort().pop() : null;
+  if (at && Date.now() - at > DROP_WINDOW_MS) {
+    return new Error(
+      `FigCli is not running in "${file}". In that file click "Reconnect figma-cli" in the right panel ` +
+      '(nothing selected), or run Plugins → Development → FigCli → Connect.'
+    );
+  }
+  return new Error(
+    `${PLUGIN_GONE}${key ? ` for "${file}"` : ''}: Figma dropped the FigCli plugin while it was busy ` +
+    '(a heavy export can take tens of seconds). It reconnects by itself within a few seconds; run the command again. ' +
+    'To build context without an export use `figma-cli read <id>`.'
+  );
+};
 
 const fileNotOpen = (file) => new Error(
   `No connection to a Figma file matching "${file}". Open it in Figma` +
-  (MODE === 'plugin' || pluginSeen ? ' and run Plugins → Development → FigCli there.' : '.')
+  (MODE === 'plugin' || pluginSeen ? ' and run Plugins → Development → FigCli → Connect there.' : '.')
 );
+
+// A pinned file with no plugin right now: stopped or dropped if its plugin was
+// here before, otherwise simply not open (or FigCli never started there).
+const pluginMissing = (file) => {
+  const key = fileKey(file);
+  return [...seenFiles].some(f => f.includes(key)) ? pluginGone(file) : fileNotOpen(file);
+};
 
 async function executeEval(code, file = null) {
   // Plugin first (auto and plugin mode), handles its own wrapping
@@ -324,7 +345,7 @@ async function executeEval(code, file = null) {
     const plugin = await pickPlugin(file);
     if (plugin) return evalViaPlugin(plugin, code);
     if (MODE === 'plugin') {
-      if (fileKey(file) && isPluginConnected()) throw fileNotOpen(file);
+      if (fileKey(file) && (isPluginConnected() || seenFiles.size)) throw pluginMissing(file);
       throw new Error('Plugin not connected. Start the Figma CLI Bridge plugin in Figma.');
     }
   }
@@ -336,9 +357,7 @@ async function executeEval(code, file = null) {
     // No CDP here: a Safe Mode setup. "Gone" only for a file whose plugin was
     // here before; a pin that never matched anything is a file not open.
     if (pluginSeen && /fetch failed|ECONNREFUSED/.test(e.message)) {
-      const key = fileKey(file);
-      if (key && ![...seenFiles].some(f => f.includes(key))) throw fileNotOpen(file);
-      throw pluginGone(file);
+      throw fileKey(file) ? pluginMissing(file) : pluginGone(file);
     }
     throw e;
   }
@@ -625,6 +644,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log(`[daemon] Plugin disconnected${conn.file ? ` (${conn.file})` : ''}`);
     pluginConns.delete(conn);
+    if (conn.file) closedAt.set(conn.file.toLowerCase(), Date.now());
 
     // Reject the requests this plugin had, not other files' requests
     for (const [id, pending] of pluginPendingRequests) {

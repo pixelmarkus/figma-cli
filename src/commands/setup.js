@@ -674,7 +674,7 @@ program
       console.log(chalk.cyan('  4. ') + chalk.white('Click ') + chalk.yellow('Open') + chalk.white(' — plugin is now installed!\n'));
 
       console.log(chalk.white.bold('  EACH SESSION:\n'));
-      console.log(chalk.cyan('  → ') + chalk.white('In Figma: ') + chalk.yellow('Plugins → Development → FigCli\n'));
+      console.log(chalk.cyan('  → ') + chalk.white('In Figma: ') + chalk.yellow('Plugins → Development → FigCli → Connect\n'));
 
       console.log(chalk.gray('  💡 Tip: Right-click plugin → "Add to toolbar" for one-click access\n'));
 
@@ -709,7 +709,7 @@ program
       if (!pluginConnected) {
         pluginSpinner.warn('Plugin not detected yet — daemon is still listening.');
         console.log(chalk.gray('\n  The daemon stays running in the background.'));
-        console.log(chalk.gray('  Open ') + chalk.yellow('Plugins → Development → FigCli') + chalk.gray(' in Figma whenever you\'re ready —'));
+        console.log(chalk.gray('  Open ') + chalk.yellow('Plugins → Development → FigCli → Connect') + chalk.gray(' in Figma whenever you\'re ready —'));
         console.log(chalk.gray('  the next CLI command will connect automatically.\n'));
       }
       return;

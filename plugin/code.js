@@ -5,12 +5,30 @@
  * No debug port needed, no patching required.
  */
 
-// Show minimal UI (needed for WebSocket connection)
-figma.showUI(__html__, {
-  width: 160,
-  height: 72,
-  position: { x: -9999, y: 9999 }  // Bottom-left (push to far left)
-});
+// Menu: Connect (no window), Connect with status window, Disconnect. The
+// right-panel "Reconnect figma-cli" button runs `reconnect`.
+const COMMAND = figma.command || 'connect';
+const STOPPING = COMMAND === 'disconnect';
+
+if (STOPPING) {
+  figma.closePlugin('figma-cli disconnected');
+} else {
+  // The WebSocket to the CLI lives in the UI iframe. Hidden, it keeps running
+  // and messaging (figma.ui.hide docs), so nothing has to sit on the canvas.
+  // Status comes as toasts; "Connect with status window" shows it.
+  figma.showUI(__html__, {
+    width: 160,
+    height: 72,
+    title: 'figma-cli',
+    visible: COMMAND === 'status',
+  });
+  // One-click reconnect in the right panel (properties panel, nothing
+  // selected). Relaunch data is stored in the file, so it shows on every
+  // page. Design files only: FigJam has no document-level relaunch buttons.
+  if (figma.editorType === 'figma') {
+    try { figma.root.setRelaunchData({ reconnect: 'Restarts the figma-cli bridge (runs without a window)' }); } catch (e) {}
+  }
+}
 
 // Execute code with auto-return and timeout protection
 async function executeCode(code, timeoutMs = 25000) {
@@ -46,8 +64,14 @@ async function executeCode(code, timeoutMs = 25000) {
   return Promise.race([execPromise, timeoutPromise]);
 }
 
+// Toasts: a drop that reconnects within a few seconds (a heavy export
+// starves the plugin) stays quiet; only a lasting drop is reported.
+let everConnected = false;
+let dropTimer = null;
+const DROP_GRACE_MS = 4000;
+
 // Handle messages from UI (WebSocket bridge)
-figma.ui.onmessage = async (msg) => {
+if (!STOPPING) figma.ui.onmessage = async (msg) => {
   // Single eval
   if (msg.type === 'eval') {
     try {
@@ -73,11 +97,20 @@ figma.ui.onmessage = async (msg) => {
   }
 
   if (msg.type === 'connected') {
-    figma.notify('✓ Figma DS CLI connected', { timeout: 2000 });
+    const wasDropped = dropTimer === null && everConnected;
+    if (dropTimer) { clearTimeout(dropTimer); dropTimer = null; }
+    if (!everConnected || wasDropped) figma.notify('✓ figma-cli connected', { timeout: 2000 });
+    everConnected = true;
   }
 
   if (msg.type === 'disconnected') {
-    figma.notify('Figma DS CLI disconnected', { timeout: 2000 });
+    if (!dropTimer && everConnected) {
+      dropTimer = setTimeout(() => {
+        // null again, so the next 'connected' says so
+        dropTimer = null;
+        figma.notify('figma-cli disconnected, reconnecting…', { timeout: 3000 });
+      }, DROP_GRACE_MS);
+    }
   }
 
   if (msg.type === 'error') {

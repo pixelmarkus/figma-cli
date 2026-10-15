@@ -417,7 +417,7 @@ figma-cli set fill "var:primary"
 
 **Browser Mode (no app modification):** `figma-cli connect --browser` - Drives Figma running in a **normal Chromium browser** via CDP; the local Figma app is **never patched or modified**. It launches a Chrome/Edge/Brave/Chromium window with remote debugging enabled (dedicated persistent profile, so your Figma login and everyday browser profile are untouched), waits for you to open a design file there, then runs the same fast CDP path as Yolo. Use this when patching the desktop app is undesirable (compliance, no "App Management" permission, locked-down machine). Note: expects Figma Desktop not to be occupying the debug port (9222) at the same time.
 
-**Safe Mode:** `figma-cli connect --safe` - Plugin-based, no Figma modification. Then: Plugins > Development > FigCli.
+**Safe Mode:** `figma-cli connect --safe` - Plugin-based, no Figma modification. Then: Plugins > Development > FigCli > Connect. The plugin runs without a window (status as toasts; "Connect with status window" shows one), and design files get a "Reconnect figma-cli" button in the right panel.
 
 **Safe Mode:** `render` and `render-batch` work the same as in Yolo Mode, including text. Use `eval` with the native Figma API only when JSX can't express what you need.
 

@@ -5,12 +5,42 @@
   "main": "code.js",
   "ui": "ui.html",
   "capabilities": [],
-  "permissions": ["teamlibrary"],
+  "permissions": [
+    "teamlibrary"
+  ],
   "enableProposedApi": false,
-  "editorType": ["figma", "figjam"],
+  "editorType": [
+    "figma",
+    "figjam"
+  ],
   "documentAccess": "dynamic-page",
   "networkAccess": {
-    "allowedDomains": ["*"],
+    "allowedDomains": [
+      "*"
+    ],
     "reasoning": "Connects to local CLI daemon for command execution"
-  }
+  },
+  "menu": [
+    {
+      "name": "Connect",
+      "command": "connect"
+    },
+    {
+      "name": "Connect with status window",
+      "command": "status"
+    },
+    {
+      "separator": true
+    },
+    {
+      "name": "Disconnect",
+      "command": "disconnect"
+    }
+  ],
+  "relaunchButtons": [
+    {
+      "command": "reconnect",
+      "name": "Reconnect figma-cli"
+    }
+  ]
 }

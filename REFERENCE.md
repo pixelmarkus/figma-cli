@@ -489,7 +489,7 @@ Safe Mode uses a plugin-based connection instead of CDP (Chrome DevTools Protoco
 node src/index.js connect --safe
 ```
 
-Then in Figma: Plugins → Development → FigCli
+Then in Figma: Plugins → Development → FigCli → Connect (no window; "Reconnect figma-cli" in the right panel restarts it)
 
 ### Differences from Yolo Mode
 

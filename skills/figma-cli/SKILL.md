@@ -17,7 +17,7 @@ run them silently and give friendly feedback.
 - `figma-cli connect --browser` — **Browser**: drives Figma in a Chromium browser via
   a local connection; **never modifies the Figma app**. Use when patching the desktop
   app is undesirable (compliance / locked-down machine / no "App Management" permission).
-- `figma-cli connect --safe` — **Safe**: official plugin (Plugins → Development → FigCli).
+- `figma-cli connect --safe` — **Safe**: official plugin (Plugins → Development → FigCli → Connect; runs without a window).
 
 ## Golden rules
 1. **Create frames with `render` / `render-batch`** — they have smart positioning.

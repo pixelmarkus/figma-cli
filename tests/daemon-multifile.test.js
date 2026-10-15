@@ -75,7 +75,7 @@ describe('daemon serves several files at once', () => {
     mkdirSync(join(home, '.figma-ds-cli'), { recursive: true });
     writeFileSync(join(home, '.figma-ds-cli', '.daemon-token'), TOKEN);
     daemon = spawn(process.execPath, [DAEMON], {
-      env: { ...process.env, HOME: home, USERPROFILE: home, DAEMON_PORT: String(port), DAEMON_MODE: 'plugin', FIGMA_FILE: '' },
+      env: { ...process.env, HOME: home, USERPROFILE: home, DAEMON_PORT: String(port), DAEMON_MODE: 'plugin', FIGMA_FILE: '', DAEMON_DROP_WINDOW_MS: '300' },
       stdio: 'ignore',
     });
     await waitFor(async () => (await request('/health')).status === 200);
@@ -136,5 +136,14 @@ describe('daemon serves several files at once', () => {
     assert.equal(b.status, 200, JSON.stringify(b.body));
     assert.equal(b.body.result.code, 'beta keeps going');
     await waitFor(async () => (await request('/health')).body.files.length === 1);
+  });
+
+  it('a plugin gone for a while is reported as stopped, with how to start it', async () => {
+    // Alpha was closed in the previous test; wait past the drop window
+    await new Promise(r => setTimeout(r, 400));
+    const r = await exec('after stop', 'Alpha');
+    assert.equal(r.status, 500);
+    assert.match(r.body.error, /FigCli is not running in "Alpha"/);
+    assert.match(r.body.error, /Reconnect figma-cli/);
   });
 });

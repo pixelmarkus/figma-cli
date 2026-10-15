@@ -366,7 +366,7 @@ async function daemonExec(action, data = {}, timeoutMs = 90000) {
           if (/Plugin not connected/i.test(errObj.error)) {
             throw new Error(
               'Plugin not connected.\n' +
-              'In Figma: Plugins → Development → FigCli (keep that tab open).\n' +
+              'In Figma: Plugins → Development → FigCli → Connect (it runs without a window).\n' +
               'Or switch to Yolo Mode: node src/index.js connect'
             );
           }

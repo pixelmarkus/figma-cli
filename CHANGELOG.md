@@ -4,6 +4,7 @@
 
 ### Added
 
+- The FigCli plugin runs without a window: no "Connected" box on the canvas any more (a hidden plugin window keeps its connection). Plugins → Development → FigCli has **Connect**, **Connect with status window** and **Disconnect**, and design files get a **Reconnect figma-cli** button in the right panel (with nothing selected; stored in the file, so collaborators may see it too). A drop that reconnects within 4 s no longer shows "disconnected" / "connected" toasts
 - `figma-cli read <id>` / `read --page "Name"` / `read --selection`: a frame as text, with the copy in reading order, each instance as `<Component variant=…> "text" [id]` and ids to act on. A full 867-layer screen is 58 lines (~740 tokens) in 0.4 s, where a screenshot of it took Figma over 20 s. `--texts` prints only the copy, `--detail` adds sizes, layout and paint
 - `read --names` puts each text layer's name before its copy where it says something (not auto-named), for checking translation-key layer names
 - `figma-cli files` works in Safe Mode: it lists the files whose FigCli plugin is connected (it needed the CDP port before)

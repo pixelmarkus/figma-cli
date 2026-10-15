@@ -143,7 +143,7 @@ figma-cli talks to Figma in one of three ways. Claude picks one during setup , h
 
 ### 🛡️ Safe Mode , no changes to the Figma app
 - **Doesn't touch the Figma app at all.** Instead it uses a tiny built-in Figma plugin.
-- You run it once from Figma's **Plugins → Development → FigCli** and keep that plugin open while you work.
+- You run it once from Figma's **Plugins → Development → FigCli → Connect**. It runs without a window; connection changes show as short toasts, and the right panel gets a **Reconnect figma-cli** button (with nothing selected). **Connect with status window** shows the small status window, **Disconnect** stops it.
 - A little more manual (you start the plugin), but **zero modifications** to Figma itself , good if you, or your company's IT policy, don't want the app patched.
 - Tell Claude *"connect to Figma in safe mode"*.
 
