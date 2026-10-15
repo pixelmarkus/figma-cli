@@ -121,7 +121,7 @@ tokens
   .command('preset <name>')
   .description('Add color presets: shadcn, radix')
   .action(async (preset) => {
-    checkConnection();
+    await checkConnection();
 
     const presetLower = preset.toLowerCase();
 
@@ -718,7 +718,7 @@ tokens
       return;
     }
 
-    checkConnection();
+    await checkConnection();
     const { toTokensImportJson, summarizeForLLM, variableImportCode, chunkVariableTokens } = await import('../design-md.js');
 
     // Authoritative path: the file carries real variable collections (from
@@ -856,7 +856,7 @@ tokens
   .command('ds')
   .description('Create IDS Base Design System (complete starter kit)')
   .action(async () => {
-    checkConnection();
+    await checkConnection();
 
     console.log(chalk.cyan('\n  IDS Base Design System'));
     console.log(chalk.gray('  by Into Design Systems\n'));
@@ -1056,7 +1056,7 @@ tokens
   .command('components')
   .description('Create IDS Base Components (Button, Input, Card, Badge)')
   .action(async () => {
-    checkConnection();
+    await checkConnection();
 
     console.log(chalk.cyan('\n  IDS Base Components'));
     console.log(chalk.gray('  by Into Design Systems\n'));

@@ -400,38 +400,27 @@ async function daemonExec(action, data = {}, timeoutMs = 90000) {
 // fast path self-heals. Only auto-restarts when the user has connected before
 // (PID file present) — never spawns a daemon on a fresh, never-connected setup.
 /**
- * Title of the file the running daemon is bound to (null when unknown).
- * Cheap: one /health call, same endpoint the health check already uses.
+ * FIGMA_FILE pins every command to one open file. A multi-file daemon routes
+ * each request by its `file` field, so it is never restarted for a pin:
+ * that would kill the requests other agents have in flight on other files.
+ * An older daemon holds ONE file and ignores the request's file, so the
+ * request would silently run in whatever file it holds (in Safe Mode it does
+ * not even say which). Restart it, unless it already holds the pinned file;
+ * this CLI's daemon then serves every file.
+ * @param {string} want  the pin (FIGMA_FILE)
+ * @param {object|null} health  the daemon's /health body
  */
-function daemonBoundFile() {
-  try {
-    const token = getDaemonToken();
-    const tokenHeader = token ? ` -H "X-Daemon-Token: ${token}"` : '';
-    const body = execSync(`curl -s${tokenHeader} http://localhost:${DAEMON_PORT}/health`, {
-      encoding: 'utf8', stdio: 'pipe', timeout: 1000,
-    });
-    return JSON.parse(body).file || null;
-  } catch {
-    return null;
-  }
+function pinNeedsRestart(want, health) {
+  want = (want || '').trim().toLowerCase();
+  if (!want) return false;
+  // Unknown daemon (no or unreadable health) → don't churn.
+  if (!health || health.status === undefined) return false;
+  if (health.multiFile) return false;
+  return !(health.file && health.file.toLowerCase().includes(want));
 }
 
-/**
- * FIGMA_FILE pins every command to one open file. The daemon binds its CDP
- * connection ONCE at startup, so a pin set later would be ignored — commands
- * would keep hitting the file that happened to be first. Restart the daemon
- * when the pin and the bound file disagree.
- */
 function daemonPinMismatch() {
-  const want = (process.env.FIGMA_FILE || '').trim();
-  if (!want) return false;
-  // A multi-file daemon routes each request by its `file` field. Restarting
-  // it here would kill the requests other agents have in flight on other files.
-  if (_daemonHealthBody && _daemonHealthBody.multiFile) return false;
-  const bound = daemonBoundFile();
-  // Unknown binding (daemon just started, plugin mode) → don't churn.
-  if (!bound) return false;
-  return !bound.toLowerCase().includes(want.toLowerCase());
+  return pinNeedsRestart(process.env.FIGMA_FILE, _daemonHealthBody);
 }
 
 async function ensureDaemonRunning(maxWaitMs = 5000) {
@@ -439,8 +428,14 @@ async function ensureDaemonRunning(maxWaitMs = 5000) {
   const mismatched = running && (daemonPinMismatch() || daemonCodeMismatch());
   if (running && !mismatched) return true;
   if (mismatched) {
-    // Rebind: the daemon holds ONE CDP connection, fixed at startup.
     stopDaemon();
+    // The old daemon shuts down gracefully (up to 3s) and answers health
+    // checks meanwhile. Starting the new one before it is gone loses the port
+    // race (the new one exits), and its health would pass for the new one's.
+    const stopAt = Date.now();
+    while (Date.now() - stopAt < 4000 && isDaemonRunning(false, true)) {
+      await new Promise(r => setTimeout(r, 100));
+    }
   } else if (!existsSync(DAEMON_PID_FILE) && !isFigmaPatched()) {
     // Guard: only resurrect a daemon the user actually set up — either a PID file
     // is present (idle-shutdown leaves it) or Figma is patched for Yolo Mode (so
@@ -453,11 +448,28 @@ async function ensureDaemonRunning(maxWaitMs = 5000) {
     return false;
   }
   const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
+  let up = false;
+  while (!up && Date.now() - start < maxWaitMs) {
     await new Promise(r => setTimeout(r, 200));
-    if (isDaemonRunning(false, true)) return true; // force: bypass the "false" we just cached
+    // force: bypass the "false" we just cached; a daemon that would itself
+    // need a restart is the old one, not ours
+    up = isDaemonRunning(false, true) && !daemonPinMismatch() && !daemonCodeMismatch();
   }
-  return false;
+  if (!up) return false;
+  // A new daemon answers before Figma is back on it: Safe Mode plugins find it
+  // within ~1.5s, and until then every request fails with "Not connected".
+  // Wait for the pinned file (or any file) to reconnect, then send.
+  const want = (process.env.FIGMA_FILE || '').trim().toLowerCase();
+  const ready = () => {
+    const h = _daemonHealthBody || {};
+    if (h.status !== 'ok') return false;
+    return !want || !Array.isArray(h.files) || h.files.some(f => f.toLowerCase().includes(want));
+  };
+  while (!ready() && Date.now() - start < maxWaitMs + 6000) {
+    await new Promise(r => setTimeout(r, 250));
+    isDaemonRunning(false, true);
+  }
+  return true;
 }
 
 // Fast eval via daemon (falls back to direct connection)
@@ -1011,6 +1023,7 @@ async function isInSafeMode() {
 
 export {
   versionOlder,
+  pinNeedsRestart,
   CONFIG_DIR,
   CONFIG_FILE,
   DAEMON_PID_FILE,

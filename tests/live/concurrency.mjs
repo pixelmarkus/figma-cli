@@ -36,6 +36,7 @@ const ms = Date.now() - t0;
 const failed = done.filter(d => d.status === 'rejected');
 const made = done.filter(d => d.status === 'fulfilled').map(d => d.value);
 const report = evalJson(`(async () => {
+  await figma.loadAllPagesAsync();
   const want = ${JSON.stringify(made)};
   const out = { wrongPage: [], overlaps: [], missing: [] };
   for (const { page, ids } of want) for (const id of ids) {
@@ -53,10 +54,21 @@ const report = evalJson(`(async () => {
     }
   }
   out.currentPageUnchanged = figma.currentPage.id === ${JSON.stringify(startPage)};
-  for (const name of ${JSON.stringify(PAGES)}) { const p = figma.root.children.find(p => p.name === name); if (p) p.remove(); }
   return out;
 })()`);
 
+// Clean up separately, so a cleanup problem never hides the result. Figma does
+// not remove the page you are on, so step off a test page first.
+const cleanup = evalJson(`(async () => {
+  const test = ${JSON.stringify(PAGES)};
+  if (test.includes(figma.currentPage.name)) await figma.setCurrentPageAsync(figma.root.children.find(p => !test.includes(p.name)));
+  let removed = 0;
+  for (const p of figma.root.children.filter(p => test.includes(p.name))) { p.remove(); removed++; }
+  return { removed };
+})()`);
+if (!cleanup || typeof cleanup !== 'object') console.log('  ⚠ cleanup failed, remove the pages "' + PAGES.join('", "') + '" by hand: ' + String(cleanup).slice(0, 200));
+
+if (!report || typeof report !== 'object') { console.log('✗ could not read the result back: ' + String(report).slice(0, 300)); process.exit(1); }
 const ok = failed.length === 0 && !report.wrongPage.length && !report.overlaps.length && !report.missing.length && report.currentPageUnchanged;
 console.log(`${AGENTS} parallel agents, ${made.reduce((n, m) => n + m.ids.length, 0)} frames in ${ms} ms`);
 for (const f of failed) console.log('  ✗ command failed: ' + String(f.reason.message).split('\n')[0]);

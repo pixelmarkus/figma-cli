@@ -332,7 +332,7 @@ program
   .description('Execute JavaScript in Figma plugin context')
   .option('-f, --file <path>', 'Run code from file instead of argument')
   .action(async (code, options) => {
-    checkConnection();
+    await checkConnection();
     let jsCode = code ? unescapeShell(code) : code;
 
     // If --file option provided, read code from file
@@ -394,7 +394,7 @@ program
   .command('run <file>')
   .description('Run JavaScript file in Figma (alias for eval --file)')
   .action(async (file) => {
-    checkConnection();
+    await checkConnection();
     if (!existsSync(file)) {
       console.log(chalk.red('✗ File not found: ' + file));
       return;

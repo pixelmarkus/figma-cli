@@ -415,7 +415,7 @@ set
   .option('-n, --node <id>', 'Node ID (uses selection if not set)')
   .option('-q, --query <pattern>', 'Apply to all nodes whose name contains <pattern> (case-insensitive)')
   .action(async (color, options) => {
-    checkConnection();
+    await checkConnection();
     // For fill, after the standard selector runs we walk into matched
     // containers (Groups, Frames) and expand to their fillable descendants
     // when they don't have fills themselves.
@@ -475,7 +475,7 @@ set
   .option('-q, --query <pattern>', 'Apply to all nodes whose name contains <pattern>')
   .option('-w, --weight <n>', 'Stroke weight', '1')
   .action(async (color, options) => {
-    checkConnection();
+    await checkConnection();
     const nodeSelector = buildNodeSelector(options);
 
     let code;

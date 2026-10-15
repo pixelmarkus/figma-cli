@@ -77,7 +77,7 @@ variables
   .command('visualize [collection]')
   .description('Create color swatches on canvas (shadcn-style layout)')
   .action(async (collection, options) => {
-    checkConnection();
+    await checkConnection();
     const spinner = ora('Creating color palette...').start();
 
     const code = `(async () => {
