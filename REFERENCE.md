@@ -340,7 +340,8 @@ const s = await $style('Body/Medium');            // any local style by name
 const set = await $component('Button');           // component or set by name/id, whole file
 const i = await $instance('Button', 'variant=danger, size=large', { text: 'Delete', parent: frame });
 await $fontSafe(node);                            // load fonts, swap missing ones to Inter
-return await $describe(node);                     // compact one-line-per-node summary
+return await $describe(node);                     // one line per node, sizes/layout/paint (render's summary)
+return await $outline(node, { depth: 4 });        // the `read` text: copy, components, ids
 ```
 
 Piped output (an agent calling the CLI) is compact JSON and capped at 20,000

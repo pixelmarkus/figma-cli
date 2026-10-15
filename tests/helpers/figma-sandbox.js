@@ -32,6 +32,7 @@ function makeNode(type, sandbox) {
     setSharedPluginData() {}, getSharedPluginData() { return ''; },
     setRangeFontName() {}, setRangeFontSize() {}, setRangeFills() {},
     getRangeFontName() { return this.fontName; },
+    getMainComponentAsync() { return Promise.resolve(this.mainComponent || null); },
     createInstance() {
       const i = makeNode('INSTANCE', sandbox); i.width = this.width; i.height = this.height; i.mainComponent = this;
       for (const c of this.children) { const k = makeNode(c.type, sandbox); Object.assign(k, { name: c.name, characters: c.characters, fontName: c.fontName, visible: true }); sandbox.attach(i, k); }

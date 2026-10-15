@@ -23,6 +23,7 @@ CLI that controls Figma Desktop directly. No API key needed.
 | "what component already exists for X" | `figma-cli spec X` (shows the reuse handle) |
 | "list variables" | `figma-cli var list` |
 | "find nodes named X" | `figma-cli find "X"` |
+| "what's in this frame / page" / "read the copy" / building context | `figma-cli read <id>` / `read --page "X"` / `read <id> --texts` (text, not a screenshot) |
 | "what's on canvas" | `figma-cli canvas info` |
 | "export as PNG/SVG" | `figma-cli export png` |
 | "extract gradient from image" / "rebuild this gradient" | `figma-cli gradient extract <image>` |

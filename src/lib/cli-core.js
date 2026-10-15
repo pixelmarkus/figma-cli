@@ -690,16 +690,18 @@ function figmaEvalSync(code) {
       return data.result;
     } catch (e) {
       // Check if we're in Safe Mode (plugin only) - don't fall through to CDP
+      let safeMode = false;
       try {
         const healthToken = getDaemonToken();
         const healthHeader = healthToken ? ` -H "X-Daemon-Token: ${healthToken}"` : '';
         const healthRes = execSync(`curl -s${healthHeader} http://127.0.0.1:${DAEMON_PORT}/health`, { encoding: 'utf8', timeout: 2000 });
         const health = JSON.parse(healthRes);
-        if (health.plugin && !health.cdp) {
-          // Safe Mode - re-throw the error, don't try CDP fallback
-          throw e;
-        }
+        // Safe Mode: re-throw the daemon's error, don't try CDP. (This used to
+        // throw inside this try, so the catch below swallowed it and the
+        // CDP fallback replaced every Safe Mode error with "fetch failed".)
+        safeMode = health.plugin && !health.cdp;
       } catch {}
+      if (safeMode) throw e;
       // Fall through to direct CDP connection
     }
   }

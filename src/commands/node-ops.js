@@ -3,8 +3,74 @@ import chalk from 'chalk';
 import {
   program,
   checkConnection,
+  daemonExec,
   fastEval
 } from '../lib/cli-core.js';
+import { HELPERS_SOURCE } from '../lib/figma-helpers.js';
+
+// ============ READ ============
+//
+// The text an agent builds context from: copy in reading order, components
+// with their variants, ids to act on (see __figHelpers.outline). Cheaper than
+// a screenshot in tokens for what it says, and it needs no export, which in a
+// heavy file can take Figma tens of seconds.
+
+program
+  .command('read [nodeId]')
+  .description('Read a frame, page or selection as text: copy in reading order, components with variants, ids (no screenshot needed)')
+  .option('-p, --page <name>', 'Read a page (its frames; --depth to go deeper)')
+  .option('-s, --selection', 'Read the current selection')
+  .option('-d, --depth <n>', 'How deep to go (default 12, a page 1)')
+  .option('-l, --max-lines <n>', 'Stop after this many lines', '300')
+  .option('-t, --texts', 'Only the copy, one text per line, in reading order')
+  .option('-n, --names', 'Show each text layer\'s name before its copy (e.g. translation keys)')
+  .option('--detail', 'Also sizes, layout, padding, fills and fonts (the format render prints)')
+  .action(async (nodeId, options) => {
+    await checkConnection();
+    const opts = {
+      detail: !!options.detail,
+      textsOnly: !!options.texts,
+      names: !!options.names,
+      maxLines: Math.max(1, parseInt(options.maxLines) || 300),
+    };
+    const depth = options.depth !== undefined ? parseInt(options.depth) : null;
+    const code = `(async () => {
+      ${HELPERS_SOURCE}
+      let roots;
+      if (${JSON.stringify(nodeId || null)}) {
+        const n = await figma.getNodeByIdAsync(${JSON.stringify(nodeId || '')});
+        if (!n) return { error: 'Node not found: ' + ${JSON.stringify(nodeId || '')} };
+        roots = [n];
+      } else if (${JSON.stringify(options.page || null)}) {
+        await figma.loadAllPagesAsync();
+        const want = ${JSON.stringify(String(options.page || '').toLowerCase())};
+        const p = figma.root.children.find(p => p.name.toLowerCase() === want)
+          || figma.root.children.find(p => p.name.toLowerCase().includes(want));
+        if (!p) return { error: 'No page matching "' + ${JSON.stringify(options.page || '')} + '". Pages: ' + figma.root.children.map(p => p.name).join(', ') };
+        roots = [p];
+      } else if (${!!options.selection} || figma.currentPage.selection.length) {
+        roots = figma.currentPage.selection.slice();
+        if (!roots.length) return { error: 'Nothing selected' };
+      } else {
+        roots = [figma.currentPage];
+      }
+      const out = [];
+      for (const r of roots) {
+        const depth = ${depth === null ? 'null' : depth};
+        out.push(await globalThis.__figHelpers.outline(r, Object.assign(${JSON.stringify(opts)},
+          depth !== null ? { depth } : (r.type === 'PAGE' ? { depth: 1 } : {}))));
+      }
+      return { text: out.join('\\n\\n') };
+    })()`;
+    try {
+      const r = await daemonExec('eval', { code });
+      if (r && r.error) { console.log(chalk.red('✗ ' + r.error)); process.exitCode = 1; return; }
+      console.log(r && r.text !== undefined ? r.text : String(r));
+    } catch (e) {
+      console.log(chalk.red('✗ Read failed: ' + e.message));
+      process.exitCode = 1;
+    }
+  });
 
 // ============ NODE OPERATIONS ============
 //

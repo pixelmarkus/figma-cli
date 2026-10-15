@@ -255,7 +255,7 @@ function lookupPluginFile(conn) {
     conn.fileLookup = Promise.race([
       evalViaPlugin(conn, 'figma.root.name'),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
-    ]).then(name => { conn.file = name || null; }, () => { conn.fileLookup = null; });
+    ]).then(name => { conn.file = name || null; if (name) seenFiles.add(name.toLowerCase()); }, () => { conn.fileLookup = null; });
   }
   return conn.fileLookup;
 }
@@ -300,9 +300,22 @@ async function evalViaPlugin(conn, code, retryCount = 0) {
 
 // ============ UNIFIED EVAL ============
 
+// Safe Mode: Figma runs the plugin and an export on the same thread. A heavy
+// export (seconds to tens of seconds in a big file) starves the plugin and its
+// connection drops; it comes back by itself. Say that, instead of falling back
+// to a CDP port that is not there and reporting "fetch failed".
+let pluginSeen = false;
+const seenFiles = new Set(); // lowercased names of files whose plugin has connected
+const PLUGIN_GONE = 'Plugin disconnected';
+const pluginGone = (file) => new Error(
+  `${PLUGIN_GONE}${fileKey(file) ? ` for "${file}"` : ''}: Figma dropped the FigCli plugin while it was busy ` +
+  '(a heavy export can take tens of seconds). It reconnects by itself within a few seconds; run the command again. ' +
+  'To build context without an export use `figma-cli read <id>`.'
+);
+
 const fileNotOpen = (file) => new Error(
   `No connection to a Figma file matching "${file}". Open it in Figma` +
-  (MODE === 'plugin' ? ' and run Plugins → Development → FigCli there.' : '.')
+  (MODE === 'plugin' || pluginSeen ? ' and run Plugins → Development → FigCli there.' : '.')
 );
 
 async function executeEval(code, file = null) {
@@ -320,6 +333,13 @@ async function executeEval(code, file = null) {
     return await evalViaCdp(wrapCodeIfNeeded(code), file);
   } catch (e) {
     if (fileKey(file) && /No Figma design file open/.test(e.message)) throw fileNotOpen(file);
+    // No CDP here: a Safe Mode setup. "Gone" only for a file whose plugin was
+    // here before; a pin that never matched anything is a file not open.
+    if (pluginSeen && /fetch failed|ECONNREFUSED/.test(e.message)) {
+      const key = fileKey(file);
+      if (key && ![...seenFiles].some(f => f.includes(key))) throw fileNotOpen(file);
+      throw pluginGone(file);
+    }
     throw e;
   }
 }
@@ -481,6 +501,10 @@ async function handleRequest(req, res) {
           lastError = error;
           console.log(`[daemon] Attempt ${attempt + 1} failed: ${error.message}`);
 
+          // The plugin went away while running this request: it may already
+          // have changed the file, so running it again could do it twice.
+          if (error.message.startsWith(PLUGIN_GONE)) break;
+
           // NEVER retry a mutating render: executeEval may have already created
           // the frame before the response errored (a transient CDP hiccup under
           // load, e.g. several heavy files open). Retrying re-runs the render
@@ -548,6 +572,7 @@ wss.on('connection', (ws) => {
   console.log('[daemon] Plugin connected (Safe Mode)');
   const conn = { ws, file: null, fileLookup: null };
   pluginConns.add(conn);
+  pluginSeen = true;
   resetIdleTimer(); // Plugin connection counts as activity
 
   ws.on('message', (data) => {
@@ -605,7 +630,7 @@ wss.on('connection', (ws) => {
     for (const [id, pending] of pluginPendingRequests) {
       if (pending.conn !== conn) continue;
       clearTimeout(pending.timeout);
-      pending.reject(new Error('Plugin disconnected'));
+      pending.reject(pluginGone(conn.file));
       pluginPendingRequests.delete(id);
     }
   });

@@ -84,6 +84,7 @@ export const COMMAND_MODULES = {
   analyze: ['analyze'],
   a11y: ['a11y'],
   node: ['node-ops'],
+  read: ['node-ops'],
   slot: ['slots'],
   'export-jsx': ['figjam'],
   'export-storybook': ['figjam'],

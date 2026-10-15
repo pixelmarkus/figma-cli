@@ -259,7 +259,16 @@ program
       };
     })()`;
 
-    const result = figmaEvalSync(code);
+    let result;
+    try {
+      result = figmaEvalSync(code);
+    } catch (e) {
+      // A clean message, not a stack trace: in a heavy file the export itself
+      // can take Figma long enough to drop the plugin (see daemon pluginGone).
+      console.error(chalk.red('✗ Screenshot failed: ' + e.message));
+      if (!/figma-cli read/.test(e.message)) console.error(chalk.gray('  For structure and copy, `figma-cli read ' + (nodeId || '<id>') + '` needs no export.'));
+      process.exit(1);
+    }
     if (result.error) {
       console.error(chalk.red('✗'), result.error);
       process.exit(1);

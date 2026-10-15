@@ -2,7 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- `figma-cli read <id>` / `read --page "Name"` / `read --selection`: a frame as text, with the copy in reading order, each instance as `<Component variant=…> "text" [id]` and ids to act on. A full 867-layer screen is 58 lines (~740 tokens) in 0.4 s, where a screenshot of it took Figma over 20 s. `--texts` prints only the copy, `--detail` adds sizes, layout and paint
+- `read --names` puts each text layer's name before its copy where it says something (not auto-named), for checking translation-key layer names
+- `figma-cli files` works in Safe Mode: it lists the files whose FigCli plugin is connected (it needed the CDP port before)
+- `render` / `render-batch` print their summary in the same format (`$describe`), with ids for frames and instances; `$outline` is the `read` text inside `eval`
+
 ### Fixed
+
+- Safe Mode errors from `verify`, `export-jsx` and other synchronous commands came out as "fetch failed": the CLI's Safe Mode check threw inside its own `try`, so the CDP fallback replaced the real error. When Figma drops the plugin during a heavy export, the error now says so, and `verify` prints it without a stack trace
+- A pin no open file matches says so ("No connection to a Figma file matching …") instead of "Plugin disconnected"
+- A request whose plugin disconnected mid-run is not run again (it may already have changed the file)
 
 - Parallel renders on the same page no longer overlap. `render` read the free x position in a separate call before rendering, so two agents got the same spot; frames are now placed inside Figma when they are finished, skipping frames other renders are still building
 - `render --page` / `render-batch --page` append to that page directly instead of switching Figma's current page, which every agent shares; a parallel render could land on another agent's page. `--page` no longer changes the page you are looking at

@@ -10,7 +10,9 @@ import {
   checkConnection,
   fastEval,
   isInSafeMode,
-  runFigmaUse
+  runFigmaUse,
+  DAEMON_PORT,
+  getDaemonToken,
 } from '../lib/cli-core.js';
 
 // ============ EXPORT ============
@@ -447,6 +449,16 @@ program
   .description('List open Figma design files as JSON')
   .action(async () => {
     try {
+      // Safe Mode has no CDP port to list tabs: ask the daemon which files'
+      // FigCli plugins are connected (those are the files commands can reach).
+      try {
+        const res = await fetch(`http://127.0.0.1:${DAEMON_PORT}/health`, { headers: { 'X-Daemon-Token': getDaemonToken() || '' }, signal: AbortSignal.timeout(1500) });
+        const h = await res.json();
+        if (h.plugin && !h.cdp && Array.isArray(h.files)) {
+          console.log(JSON.stringify(h.files.map(title => ({ title, via: 'plugin' }))));
+          return;
+        }
+      } catch {}
       const pages = await FigmaClient.listPages();
       // Filter to actual design/board files only (exclude blobs, webpack, feed, tabs)
       const designFiles = pages.filter(p =>

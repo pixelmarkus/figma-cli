@@ -11,7 +11,7 @@
 // Kept as a source string because it is evaluated in the Figma sandbox, not in
 // Node. It installs itself on globalThis and is idempotent per version.
 
-export const HELPERS_VERSION = 7;
+export const HELPERS_VERSION = 11;
 
 export const HELPERS_SOURCE = `
 if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}) {
@@ -210,8 +210,41 @@ if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}
   //     Title TEXT 20 Inter Bold w=FILL fill=var:fgColor/default "Release notes"
   //     Button INSTANCE Button[variant=danger, size=large] "Delete"
   // Capped by depth and line count so a big tree never floods the output.
-  H.describe = async (root, maxDepth = 3, maxLines = 40) => {
+  // Outline of a subtree as text: one line per meaningful node, the copy in
+  // reading order, instances as <Component variant=…> with their texts, ids
+  // to act on. An agent builds context from this instead of a screenshot: it
+  // is exact (real copy, real names), cheap (about as many tokens as an
+  // image) and fast (no export, which can take Figma tens of seconds).
+  //
+  // Two levels, one grammar:
+  //   compact (read):   wrapper frames folded, shapes and hidden layers left out
+  //   detail (render summary, $describe): every node plus sizes, layout, paint
+  //
+  //   Card col [12:3]                         container: name, layout, id
+  //     "Title"                               text
+  //     <Button variant=primary> "Save" [12:9] instance: component, variant, texts
+  H.outline = async (root, opts = {}) => {
+    const detail = !!opts.detail;
+    const maxDepth = opts.depth === undefined ? (detail ? 3 : 12) : opts.depth;
+    const maxLines = opts.maxLines === undefined ? (detail ? 40 : 300) : opts.maxLines;
+    const textMax = opts.textMax || (detail ? 40 : 300);
+    const textsOnly = !!opts.textsOnly;
+    // names: show each text layer's name before its copy where they differ
+    // (translation keys live in layer names: \`sheet_title: "Book service"\`)
+    const names = !!opts.names;
+    const flat = (x) => String(x).replace(/\\s+/g, ' ').trim();
+    // autoRename: Figma names the layer after its text, so the name says nothing
+    const label = (t) => names && t.name && !t.autoRename && flat(t.name) !== flat(t.characters) ? t.name + ': ' : '';
     const lines = [];
+    let more = false;
+    const push = (l) => { if (lines.length >= maxLines) { more = true; return false; } lines.push(l); return true; };
+    const q = (t) => {
+      t = String(t).replace(/\\s+/g, ' ').trim();
+      return JSON.stringify(t.length > textMax ? t.slice(0, textMax) + '…' : t);
+    };
+    const visible = (n) => n.visible !== false;
+    const SHAPES = ['VECTOR', 'BOOLEAN_OPERATION', 'LINE', 'ELLIPSE', 'RECTANGLE', 'STAR', 'POLYGON', 'SLICE'];
+    const WRAPPER = /^(Frame|Group|Auto layout|Container|Wrapper|Content)( \\d+)?$/;
     const varName = async (paint) => {
       const id = paint && paint.boundVariables && paint.boundVariables.color && paint.boundVariables.color.id;
       if (!id) return null;
@@ -227,27 +260,54 @@ if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}
       return p.type.toLowerCase();
     };
     const styleName = async (id) => (typeof id === 'string' && id) ? ((await figma.getStyleByIdAsync(id)) || {}).name : null;
-    const visit = async (n, depth) => {
-      if (lines.length >= maxLines) return;
-      try { await line(n, depth); } catch (e) { lines.push('  '.repeat(depth) + n.name + ' ' + n.type); }
-      // do not descend into instances (their inside is the component's business)
-      if ('children' in n && n.type !== 'INSTANCE' && depth < maxDepth) {
-        for (const c of n.children) { if (lines.length >= maxLines) break; await visit(c, depth + 1); }
+    // Texts inside a subtree, in reading order, skipping hidden branches.
+    const textsIn = (n, out = []) => {
+      for (const c of ordered(n)) {
+        if (c.type === 'TEXT') { if (c.characters.trim()) out.push(c); }
+        else if ('children' in c) textsIn(c, out);
       }
+      return out;
     };
-    const line = async (n, depth) => {
-      const bits = [n.name, n.type];
+    // Auto-layout keeps its child order; free layout reads top-left first.
+    const ordered = (n) => {
+      const kids = ('children' in n ? n.children : []).filter(visible);
+      if (n.layoutMode && n.layoutMode !== 'NONE') return kids;
+      return kids.slice().sort((a, b) => ('y' in a && 'y' in b) ? ((a.y - b.y) || (a.x - b.x)) : 0);
+    };
+    const component = async (inst) => {
+      let mc = null;
+      try { mc = await inst.getMainComponentAsync(); } catch (e) {}
+      const owner = mc && mc.parent && mc.parent.type === 'COMPONENT_SET' ? mc.parent : mc;
+      const name = owner ? owner.name : inst.name;
+      // Variant values always; other properties only where they differ from
+      // the component's default, so a plain instance stays one short line.
+      const bits = [];
+      try {
+        const defs = owner ? owner.componentPropertyDefinitions : {};
+        for (const [k, v] of Object.entries(inst.componentProperties || {})) {
+          const key = k.split('#')[0];
+          if (v.type === 'VARIANT') bits.push(key + '=' + v.value);
+          else if (v.type === 'BOOLEAN' && defs[k] && defs[k].defaultValue !== v.value) bits.push(key + '=' + v.value);
+          else if (v.type === 'INSTANCE_SWAP' && defs[k] && defs[k].defaultValue !== v.value) {
+            const sw = await figma.getNodeByIdAsync(v.value);
+            bits.push(key + '=' + (sw ? sw.name : 'swapped'));
+          }
+        }
+      } catch (e) {}
+      return '<' + name + (bits.length ? ' ' + bits.join(', ') : '') + '>';
+    };
+    // Sizes, layout, paint: the detail level, as before in describe().
+    const attrs = async (n) => {
+      const bits = [];
       if ('width' in n) bits.push(Math.round(n.width) + 'x' + Math.round(n.height));
       if (n.layoutMode && n.layoutMode !== 'NONE') {
-        bits.push(n.layoutMode === 'HORIZONTAL' ? 'row' : 'col');
         if (n.itemSpacing) bits.push('gap=' + n.itemSpacing);
         const pad = [n.paddingTop, n.paddingRight, n.paddingBottom, n.paddingLeft];
         if (pad.some(Boolean)) bits.push('pad=' + (pad.every(v => v === pad[0]) ? pad[0] : pad.join('/')));
         if (n.layoutWrap === 'WRAP') bits.push('wrap');
       }
-      // sizing mode, where it is not the plain fixed size
-      const inAuto = (n.layoutMode && n.layoutMode !== 'NONE') || (n.parent && n.parent.layoutMode && n.parent.layoutMode !== 'NONE');
-      if (inAuto && n.type !== 'TEXT' || n.type === 'TEXT' && n.parent && n.parent.layoutMode && n.parent.layoutMode !== 'NONE') {
+      const inAuto = n.parent && n.parent.layoutMode && n.parent.layoutMode !== 'NONE';
+      if ((n.layoutMode && n.layoutMode !== 'NONE') || inAuto) {
         try {
           if (n.layoutSizingHorizontal && n.layoutSizingHorizontal !== 'FIXED') bits.push('w=' + n.layoutSizingHorizontal);
           if (n.layoutSizingVertical && n.layoutSizingVertical !== 'FIXED') bits.push('h=' + n.layoutSizingVertical);
@@ -264,10 +324,6 @@ if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}
       if ('fills' in n && n.type !== 'INSTANCE') { const f = await paintDesc(n.fills); if (f) bits.push('fill=' + f); }
       if ('strokes' in n && n.strokes && n.strokes.length) { const s = await paintDesc(n.strokes); if (s) bits.push('stroke=' + s); }
       if ('effectStyleId' in n) { const es = await styleName(n.effectStyleId); if (es) bits.push('effect=' + es); }
-      if (n.type === 'INSTANCE') {
-        const mc = await n.getMainComponentAsync();
-        if (mc) bits.push('of ' + (mc.parent && mc.parent.type === 'COMPONENT_SET' ? mc.parent.name + '[' + mc.name + ']' : mc.name));
-      }
       if (n.type === 'COMPONENT_SET') bits.push(n.children.length + ' variants');
       // Figma throws when a VARIANT is asked for its property definitions;
       // only sets and standalone components have them.
@@ -282,22 +338,67 @@ if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}
         bits.push('bound=' + Object.entries(n.componentPropertyReferences).map(([k, v]) => k + '→' + String(v).split('#')[0]).join(','));
       }
       if (n.reactions && n.reactions.length) bits.push(n.reactions.length + ' interaction(s)');
-      if (n.type === 'TEXT') bits.push(JSON.stringify(n.characters.length > 40 ? n.characters.slice(0, 40) + '…' : n.characters));
-      else if (n.type === 'INSTANCE') {
-        const t = n.findOne(x => x.type === 'TEXT' && x.visible);
-        if (t) bits.push(JSON.stringify(t.characters.length > 40 ? t.characters.slice(0, 40) + '…' : t.characters));
-      }
-      lines.push('  '.repeat(depth) + bits.join(' '));
+      if (!visible(n)) bits.push('hidden');
+      return bits.length ? ' ' + bits.join(' ') : '';
     };
-    await visit(root, 0);
-    if (lines.length >= maxLines) lines.push('  … (more nodes; ' + maxLines + '-line summary)');
+    const id = (n) => ' [' + n.id + ']';
+    const layout = (n) => n.layoutMode && n.layoutMode !== 'NONE' ? (n.layoutMode === 'HORIZONTAL' ? ' row' : ' col') : '';
+    const kind = (n) => ['FRAME', 'TEXT', 'INSTANCE', 'GROUP'].includes(n.type) ? '' : ' ' + n.type;
+
+    const visit = async (n, depth, indent) => {
+      if (more) return;
+      const pad = '  '.repeat(indent);
+      try {
+        if (textsOnly) {
+          if (n.type === 'TEXT') { if (n.characters.trim()) push(label(n) + q(n.characters)); return; }
+          if (n.type === 'INSTANCE') { for (const t of textsIn(n)) if (!push(label(t) + q(t.characters))) return; return; }
+          for (const c of ordered(n)) await visit(c, depth + 1, indent);
+          return;
+        }
+        if (n.type === 'TEXT') {
+          push(pad + label(n) + q(n.characters) + (detail ? await attrs(n) : ''));
+          return;
+        }
+        if (n.type === 'INSTANCE') {
+          const t = textsIn(n).map(x => label(x) + q(x.characters));
+          push(pad + await component(n) + (t.length ? ' ' + t.join(' ') : '') + (detail ? await attrs(n) : '') + id(n));
+          return; // the inside of an instance is the component's business
+        }
+        if (SHAPES.includes(n.type)) {
+          if (detail) push(pad + n.name + ' ' + n.type + await attrs(n));
+          return;
+        }
+        // compact: a wrapper with a generic name adds a level, not meaning
+        if (!detail && depth > 0 && WRAPPER.test(n.name) && 'children' in n) {
+          for (const c of ordered(n)) await visit(c, depth, indent);
+          return;
+        }
+        const size = !detail && (depth === 0 || n.parent && n.parent.type === 'PAGE') && 'width' in n ? ' (' + Math.round(n.width) + 'x' + Math.round(n.height) + ')' : '';
+        if (!push(pad + n.name + kind(n) + layout(n) + size + (detail ? await attrs(n) : '') + id(n))) return;
+        if (!('children' in n)) return;
+        const kids = detail ? n.children : ordered(n);
+        if (depth >= maxDepth) {
+          if (kids.length) push(pad + '  … ' + kids.length + ' more inside' + (detail ? '' : ': read ' + n.id));
+          return;
+        }
+        for (const c of kids) { if (more) return; await visit(c, depth + 1, indent + 1); }
+      } catch (e) {
+        push(pad + n.name + ' ' + n.type);
+      }
+    };
+    await visit(root, 0, 0);
+    if (more) lines.push('… (cut at ' + maxLines + ' lines' + (detail ? '' : ': read a child id, or raise --max-lines') + ')');
     return lines.join('\\n');
   };
+
+  // Detail outline, the summary render prints. Kept under its old name.
+  H.describe = (root, maxDepth = 3, maxLines = 40) => H.outline(root, { detail: true, depth: maxDepth, maxLines });
 
   globalThis.__figHelpers = H;
   globalThis.$page = H.page; globalThis.$var = H.variable; globalThis.$bind = H.bind;
   globalThis.$style = H.style; globalThis.$component = H.component;
   globalThis.$instance = H.instance; globalThis.$fontSafe = H.fontSafe; globalThis.$describe = H.describe;
+  globalThis.$outline = H.outline;
 }
 `;
 

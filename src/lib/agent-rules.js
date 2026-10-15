@@ -34,7 +34,18 @@ Every command you need for everyday work is on this page. Only run
 you can**: one \`eval\` that reads everything, one \`render\` that builds the
 whole structure.
 
-## Reading: \`eval\` runs Figma Plugin API code
+## Reading: start with \`read\`, not a screenshot
+\`figma-cli read <id>\` prints a frame as text: the copy in reading order,
+each instance as \`<Component variant=…> "its text" [id]\`, ids to act on.
+A full screen is a few hundred tokens and takes well under a second; a
+screenshot of it can take Figma tens of seconds in a heavy file.
+- \`read --page "Name"\` lists a page's frames (ids, sizes); then read one of them.
+- \`read\` alone reads the selection, or the current page.
+- \`--texts\` only the copy, \`--detail\` sizes/layout/fills too, \`--depth N\`.
+- \`… N more inside: read <id>\` means the output stopped there: read that id.
+Use \`verify\` only when you need to SEE it (visual check after building).
+
+## Advanced reading: \`eval\` runs Figma Plugin API code
 \`figma-cli eval '<code>'\` runs JavaScript in the open file and prints the
 result as compact JSON. Top-level \`await\` works. A single expression returns
 itself; statements need an explicit \`return\`. Long code: \`eval --file q.js\`.
@@ -56,7 +67,8 @@ Helpers available inside \`eval\` (they handle the Figma pitfalls for you):
 - \`await $instance(name, 'axis=value, axis=value', {text, parent})\` instance of a
   variant; unspecified axes use the default variant
 - \`await $fontSafe(node)\` load fonts and replace fonts that are not installed
-- \`await $describe(node)\` compact one-line-per-node summary of a subtree
+- \`await $describe(node)\` one line per node with sizes/layout/paint (render's summary)
+- \`await $outline(node, {depth, maxLines, textsOnly})\` the \`read\` text of a subtree
 - Loops are fine: e.g. one instance per variant of a set in a single \`eval\`:
   \`for (const v of (await $component('Name')).children) await $instance(v.id, '', {parent: frame})\`
 
@@ -129,6 +141,8 @@ figma-cli render '<Frame>...</Frame>'  # one frame
 figma-cli render-batch '[ "<Frame>", ... ]' --direction row
 figma-cli shadcn add button --count 3  # N distinct shadcn primitives
 figma-cli node to-component "<id>"     # promote to a component
+figma-cli read "<id>"                  # frame as text: copy, components, ids
+figma-cli read --page "Name"           # a page's frames
 figma-cli verify "<id>" --measure      # screenshot + dimensions
 figma-cli a11y audit                   # contrast / touch / text checks
 \`\`\`
