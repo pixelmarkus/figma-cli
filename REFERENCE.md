@@ -352,6 +352,8 @@ characters; a terminal still gets indented JSON.
 
 ```bash
 figma-cli render --page "Scratch" '<Frame ...>'      # render-batch takes --page too
+# --page does not switch the page you are looking at, so parallel agents on
+# different pages cannot send each other's frames to the wrong page.
 ```
 ```jsx
 <Instance component="Button" variant="variant=danger, size=large" text="Delete" />  // any page, font-safe

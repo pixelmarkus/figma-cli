@@ -150,12 +150,12 @@ describe('parseJSX placement options (replacing the external renderer)', () => {
     const code = await client.parseJSX('<Frame name="P" w={10} h={10} />', { x: 42, y: 99 });
     assert.match(code, /const smartX = 42;/);
     assert.match(code, /frame\.y = 99;/);
-    assert.doesNotMatch(code, /maxRight/, 'explicit x must not also run smart positioning');
+    assert.doesNotMatch(code, /__figHelpers\.place\(/, 'explicit x must not also run smart positioning');
   });
 
   it('smart positioning still applies when no x is given', async () => {
     const code = await client.parseJSX('<Frame name="P" w={10} h={10} />');
-    assert.match(code, /maxRight/);
+    assert.match(code, /__figHelpers\.place\(__page, \[__root\]\)/);
   });
 
   it('--parent re-homes the frame after its children exist', async () => {

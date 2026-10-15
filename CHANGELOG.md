@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Parallel renders on the same page no longer overlap. `render` read the free x position in a separate call before rendering, so two agents got the same spot; frames are now placed inside Figma when they are finished, skipping frames other renders are still building
+- `render --page` / `render-batch --page` append to that page directly instead of switching Figma's current page, which every agent shares; a parallel render could land on another agent's page. `--page` no longer changes the page you are looking at
+- One daemon serves several open files at once. Each request carries its `FIGMA_FILE`, and the daemon keeps one connection per file (CDP tab or FigCli plugin). Before, a request for another file restarted the daemon and killed other agents' requests, and a second file's plugin replaced the first one
+
 ## 2.2.5 (2026-09-26)
 
 ### Fixed

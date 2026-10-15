@@ -17,7 +17,7 @@ CLI that controls Figma Desktop directly. No API key needed.
 | "convert to component" | `figma-cli node to-component "ID"` |
 | "use the existing X component" / "don't rebuild, instance it" | `figma-cli instantiate "X"` |
 | "put a Button / any existing component into this frame" | `<Instance component="Button" variant="size=large" text="Save" />` inside `render` |
-| "build it on page X" | `figma-cli render --page "X" '<Frame>…'` (creates the page when missing) |
+| "build it on page X" | `figma-cli render --page "X" '<Frame>…'` (creates the page when missing, does not switch the user's page) |
 | "make a component set with these variants" | `figma-cli render-batch '["<Frame name=\"size=small, state=hover\" …>", …]' --variant-set Button` |
 | "use text style / effect style X" | `<Text textStyle="Body/Medium">`, `<Frame effectStyle="shadow/small">` |
 | "what component already exists for X" | `figma-cli spec X` (shows the reuse handle) |
@@ -429,8 +429,18 @@ With several files open, commands silently hit the wrong one. Pin it:
 FIGMA_FILE="Primer Check" figma-cli extract DESIGN.md   # substring of the file name
 ```
 
-The CLI compares the pin against the daemon's bound file and rebinds
-automatically when they differ. Verify anytime with `figma-cli eval 'figma.root.name'`.
+Every request carries its pin, and the daemon keeps one connection per file
+(CDP tab or FigCli plugin), so agents on different files share one daemon
+without restarting it. A pin no open file matches is an error, never the wrong
+file. Verify anytime with `figma-cli eval 'figma.root.name'`.
+
+### Several agents at once
+
+Figma runs plugin code on one thread, so CPU-heavy commands still take turns,
+but awaits interleave. Renders register their frames as in flight and place them
+when finished (`__figHelpers.place`), so parallel renders never overlap, and
+`--page` appends to its page without touching the shared `currentPage`.
+Tests: `tests/concurrency.test.js` (mock sandbox), `tests/daemon-multifile.test.js`.
 
 ---
 

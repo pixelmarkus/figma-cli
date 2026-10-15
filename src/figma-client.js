@@ -710,6 +710,9 @@ export class FigmaClient {
 
       return `
         const f${frameIdx} = figma.createFrame();
+        if (f${frameIdx}.parent !== __page) __page.appendChild(f${frameIdx});
+        globalThis.__figHelpers.inflight.add(f${frameIdx}.id);
+        __built.push(f${frameIdx});
         f${frameIdx}.name = ${JSON.stringify(name)};
         f${frameIdx}.resize(${width}, ${height});
         f${frameIdx}.x = posX;
@@ -752,37 +755,44 @@ export class FigmaClient {
         ${LAYOUT_WARN_PRELUDE}
         ${varLoadCode}
 
-        // Calculate start position
-        let posX = 0, posY = 100;
-        const children = figma.currentPage.children;
-        if (children.length > 0) {
-          let maxRight = 0;
-          children.forEach(n => {
-            const right = n.x + (n.width || 0);
-            if (right > maxRight) maxRight = right;
-          });
-          posX = Math.round(maxRight + 100);
-        }
+        ${options.page
+          ? `const __page = await globalThis.__figHelpers.pageNode(${JSON.stringify(String(options.page))});`
+          : `const __page = figma.currentPage;`}
+        // Where the frames are BUILT. Their final place is decided at the end
+        // (__figHelpers.place), so a render running at the same time cannot
+        // take the same spot.
+        let posX = globalThis.__figHelpers.nextX(__page), posY = 100;
 
         const results = [];
+        const __built = [];
         let __currentNode = '';
+        let unresolved = [], layoutWarnings = [], notes = [];
+        try {
         ${framesCodes}
         // Surface unresolved var: references back to the caller. Array-prop
         // shorthand is lost by JSON.stringify, so wrap in an object when we
         // have warnings — caller unwraps. Backwards-compatible: plain success
         // still returns the array directly.
-        const unresolved = globalThis.__unresolvedVars
+        unresolved = globalThis.__unresolvedVars
           ? [...globalThis.__unresolvedVars].sort() : [];
         globalThis.__unresolvedVars = new Set();
         if (globalThis.__figHugFlush) globalThis.__figHugFlush();
-        const layoutWarnings = globalThis.__layoutWarnings || [];
+        layoutWarnings = globalThis.__layoutWarnings || [];
         globalThis.__layoutWarnings = [];
-        const notes = globalThis.__figNotes ? [...globalThis.__figNotes] : [];
-        for (const r of results) {
-          const f = await figma.getNodeByIdAsync(r.id);
-          if (!f) continue;
+        notes = globalThis.__figNotes ? [...globalThis.__figNotes] : [];
+        // Unwrap and place with no await in between: measuring the page and
+        // moving the frames is one step no other render can interleave with.
+        const __placed = [];
+        for (let i = 0; i < results.length; i++) {
+          const r = results[i], f = __built[i];
           const k = ${UNWRAP_ROOT('f')};
-          if (k !== f) { r.id = k.id; r.name = k.name; r.width = k.width; r.height = k.height; }
+          if (k !== f) { r.id = k.id; r.name = k.name; }
+          __placed.push(k);
+        }
+        globalThis.__figHelpers.place(__page, __placed, { gap: ${gap}, vertical: ${vertical}, y: 100 });
+        __placed.forEach((k, i) => { results[i].width = k.width; results[i].height = k.height; });
+        } finally {
+          for (const f of __built) globalThis.__figHelpers.inflight.delete(f.id);
         }
         for (const r of results) {
           try { const n = await figma.getNodeByIdAsync(r.id); if (n) r.summary = await globalThis.__figHelpers.describe(n, 2, 12); } catch (e) {}
@@ -2064,19 +2074,17 @@ export class FigmaClient {
 
     const { alignVal, justifyVal } = resolveAlign(flex, props);
 
-    // Smart positioning code
-    const smartPosCode = useSmartPos ? `
-        let smartX = 0;
-        const children = figma.currentPage.children;
-        if (children.length > 0) {
-          let maxRight = 0;
-          children.forEach(n => {
-            const right = n.x + (n.width || 0);
-            if (right > maxRight) maxRight = right;
-          });
-          smartX = Math.round(maxRight + 100);
-        }
-    ` : `const smartX = ${explicitX};`;
+    // Smart positioning: this x is only where the frame is BUILT. The final
+    // x is decided by __figHelpers.place once the frame is finished, so a
+    // render running at the same time cannot get the same spot.
+    // --parent places the frame inside the parent, so no page and no x.
+    const placeOnPage = useSmartPos && !opts.parent;
+    const pageCode = opts.page && !opts.parent
+      ? `const __page = await globalThis.__figHelpers.pageNode(${JSON.stringify(String(opts.page))});`
+      : `const __page = figma.currentPage;`;
+    const smartPosCode = useSmartPos
+      ? `const smartX = globalThis.__figHelpers.nextX(__page);`
+      : `const smartX = ${explicitX};`;
 
     // Generate fill/stroke code for root frame
     const rootFillCode = this.generateFillCode(bg, 'frame');
@@ -2178,11 +2186,14 @@ export class FigmaClient {
         ${fontLoadCode}
         ${LAYOUT_WARN_PRELUDE}
         ${varLoadCode}
+        ${pageCode}
         ${smartPosCode}
 
         let __currentNode = 'root';
-        try {
         const frame = figma.createFrame();
+        if (frame.parent !== __page) __page.appendChild(frame);
+        ${placeOnPage ? `globalThis.__figHelpers.inflight.add(frame.id);` : ''}
+        try {
         __currentNode = ${JSON.stringify(name)};
         frame.name = ${JSON.stringify(name)};
         frame.resize(${width}, ${height});
@@ -2235,6 +2246,8 @@ export class FigmaClient {
         globalThis.__layoutWarnings = [];
         const __notes = globalThis.__figNotes ? [...globalThis.__figNotes] : [];
         const __root = ${UNWRAP_ROOT('frame')};
+        ${placeOnPage ? `globalThis.__figHelpers.place(__page, [__root]);
+        globalThis.__figHelpers.inflight.delete(frame.id);` : ''}
         // What was built, so the caller does not need a second call to check it.
         let __summary = null;
         try { __summary = await globalThis.__figHelpers.describe(__root); } catch (e) {}
@@ -2242,6 +2255,7 @@ export class FigmaClient {
           ? { id: __root.id, name: __root.name, unresolved: __unresolved, layoutWarnings: __layoutWarnings, notes: __notes, summary: __summary }
           : { id: __root.id, name: __root.name, summary: __summary };
         } catch(e) {
+          ${placeOnPage ? `globalThis.__figHelpers.inflight.delete(frame.id);` : ''}
           frame.remove();
           throw new Error('[Node: ' + __currentNode + '] ' + e.message);
         }

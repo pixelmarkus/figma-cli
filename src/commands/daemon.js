@@ -162,7 +162,7 @@ daemon
       const reconnToken = getDaemonToken();
       const reconnHeaders = {};
       if (reconnToken) reconnHeaders['X-Daemon-Token'] = reconnToken;
-      const response = await fetch(`http://localhost:${DAEMON_PORT}/reconnect`, { headers: reconnHeaders });
+      const response = await fetch(`http://localhost:${DAEMON_PORT}/reconnect${process.env.FIGMA_FILE ? '?file=' + encodeURIComponent(process.env.FIGMA_FILE) : ''}`, { headers: reconnHeaders });
       const result = await response.json();
       if (result.error) {
         console.log(chalk.red('✗ Reconnect failed: ' + result.error));

@@ -135,109 +135,143 @@ function resetIdleTimer() {
 // Start the idle timer immediately
 resetIdleTimer()
 
-// CDP Client (Yolo Mode)
-let cdpClient = null;
-let isCdpConnecting = false;
-let lastHealthCheck = 0;
-let lastHealthResult = false;
+// Several agents can work on several open files at once. Each request names
+// its file (the CLI's FIGMA_FILE, a substring of the file name); the daemon
+// keeps one connection per file instead of one for the whole daemon. Before,
+// a request for another file restarted the daemon, which killed whatever the
+// other agents had in flight.
+const DEFAULT_FILE = (process.env.FIGMA_FILE || '').trim();
+const fileKey = (file) => String(file || DEFAULT_FILE || '').trim().toLowerCase();
+const matchesFile = (name, file) => !!name && name.toLowerCase().includes(fileKey(file));
+
+// CDP Clients (Yolo Mode), keyed by fileKey ('' = Figma's first design tab)
+const cdpClients = new Map();
+const cdpConnecting = new Map(); // fileKey -> Promise<FigmaClient>
+const cdpHealth = new Map(); // fileKey -> { time, ok }
 const HEALTH_CACHE_MS = 30000; // Cache health for 30 seconds (reduces overhead)
 
-// Plugin Client (Safe Mode)
-let pluginWs = null;
+// Plugin connections (Safe Mode): one per file running the FigCli plugin
+const pluginConns = new Set(); // { ws, file, fileLookup }
 let pluginPendingRequests = new Map();
 let pluginMsgId = 0;
 
 // ============ CDP MODE (YOLO) ============
 
-async function isCdpHealthy(forceCheck = false) {
+const isOpen = (client) => !!(client && client.ws && client.ws.readyState === 1);
+
+async function isCdpHealthy(forceCheck = false, file = null) {
+  const key = fileKey(file);
+  const client = cdpClients.get(key);
   // Quick WebSocket state check (no network call)
-  if (!cdpClient || !cdpClient.ws) return false;
-  if (cdpClient.ws.readyState !== 1) return false;
+  if (!isOpen(client)) return false;
 
   // Use cached result if recent (avoids constant eval calls)
   const now = Date.now();
-  if (!forceCheck && now - lastHealthCheck < HEALTH_CACHE_MS) {
-    return lastHealthResult;
+  const cached = cdpHealth.get(key);
+  if (!forceCheck && cached && now - cached.time < HEALTH_CACHE_MS) {
+    return cached.ok;
   }
 
+  let ok = false;
   try {
     const result = await Promise.race([
       // Checks the Plugin API, not just the socket: after a file reload the
       // socket is fine but the bound context has no `figma` any more.
-      cdpClient.eval('typeof figma === "object" && figma !== null && !!figma.root ? 1 : 0'),
+      client.eval('typeof figma === "object" && figma !== null && !!figma.root ? 1 : 0'),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2000))
     ]);
-    lastHealthCheck = now;
-    lastHealthResult = result === 1;
-    return lastHealthResult;
-  } catch {
-    lastHealthCheck = now;
-    lastHealthResult = false;
-    return false;
-  }
+    ok = result === 1;
+  } catch {}
+  cdpHealth.set(key, { time: now, ok });
+  return ok;
 }
 
-async function getCdpClient() {
+function dropCdpClient(file) {
+  const key = fileKey(file);
+  const client = cdpClients.get(key);
+  if (client) { try { client.close(); } catch {} }
+  cdpClients.delete(key);
+  cdpHealth.delete(key);
+}
+
+async function getCdpClient(file = null) {
+  const key = fileKey(file);
   // Fast path: if we have a client with open WebSocket, use it
-  if (cdpClient && cdpClient.ws && cdpClient.ws.readyState === 1) {
-    return cdpClient;
-  }
+  const existing = cdpClients.get(key);
+  if (isOpen(existing)) return existing;
 
   // WebSocket closed, need to reconnect
-  if (cdpClient) {
-    console.log('[daemon] CDP WebSocket closed, reconnecting...');
-    try { cdpClient.close(); } catch {}
-    cdpClient = null;
-    lastHealthResult = false;
+  if (existing) {
+    console.log(`[daemon] CDP WebSocket closed${key ? ` (${key})` : ''}, reconnecting...`);
+    dropCdpClient(file);
   }
 
-  // Wait if another connection attempt is in progress
-  if (isCdpConnecting) {
-    while (isCdpConnecting) {
-      await new Promise(r => setTimeout(r, 100));
-    }
-    // The other attempt may have failed and left cdpClient null —
-    // fall through and try connecting ourselves instead of returning null.
-    if (cdpClient && cdpClient.ws && cdpClient.ws.readyState === 1) {
-      return cdpClient;
-    }
-  }
+  // Share a connection attempt already in progress for the same file
+  if (cdpConnecting.has(key)) return cdpConnecting.get(key);
 
-  isCdpConnecting = true;
-  try {
+  const attempt = (async () => {
     const ClientClass = await getFigmaClient();
-    cdpClient = new ClientClass();
-    // FIGMA_FILE pins the daemon to a specific open file (substring match on the
-    // tab title). Without it Figma's first design tab wins, which silently sends
-    // commands to the wrong file when several are open.
-    await cdpClient.connect(process.env.FIGMA_FILE || null);
-    lastHealthCheck = Date.now();
-    lastHealthResult = true;
-    console.log('[daemon] Connected to Figma via CDP (Yolo Mode)');
+    const client = new ClientClass();
+    // The file pins the connection to one open file (substring match on the
+    // tab title). Without it Figma's first design tab wins.
+    await client.connect(file || DEFAULT_FILE || null);
+    cdpClients.set(key, client);
+    cdpHealth.set(key, { time: Date.now(), ok: true });
+    console.log(`[daemon] Connected to Figma via CDP (Yolo Mode): ${client.pageTitle}`);
     // File warming: Figma loads pages lazily, so the first command that looks
     // beyond the current page waits for every page to load (seconds on a big
     // design system). Start that load now, in the background, so it is done
     // before the first real command arrives. Never awaited, never fatal.
-    cdpClient.eval('figma.loadAllPagesAsync().then(() => true)').catch(() => {});
+    client.eval('figma.loadAllPagesAsync().then(() => true)').catch(() => {});
+    return client;
+  })();
+  cdpConnecting.set(key, attempt);
+  try {
+    return await attempt;
   } finally {
-    isCdpConnecting = false;
+    cdpConnecting.delete(key);
   }
-  return cdpClient;
 }
 
-async function evalViaCdp(code) {
-  const client = await getCdpClient();
+async function evalViaCdp(code, file = null) {
+  const client = await getCdpClient(file);
   return client.eval(code);
 }
 
 // ============ PLUGIN MODE (SAFE) ============
 
-function isPluginConnected() {
-  return pluginWs && pluginWs.readyState === WebSocket.OPEN;
+function openPlugins() {
+  return [...pluginConns].filter(c => c.ws.readyState === WebSocket.OPEN);
 }
 
-async function evalViaPlugin(code, retryCount = 0) {
-  if (!isPluginConnected()) {
+function isPluginConnected() {
+  return openPlugins().length > 0;
+}
+
+// Ask a freshly connected plugin which file it runs in. Older plugins do not
+// say so in their hello, and every plugin answers an eval.
+function lookupPluginFile(conn) {
+  if (!conn.fileLookup) {
+    conn.fileLookup = Promise.race([
+      evalViaPlugin(conn, 'figma.root.name'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+    ]).then(name => { conn.file = name || null; }, () => { conn.fileLookup = null; });
+  }
+  return conn.fileLookup;
+}
+
+// The plugin for this file. No file: the most recently connected plugin (the
+// old single-connection behaviour). A file nobody's plugin runs in: null.
+async function pickPlugin(file) {
+  const open = openPlugins();
+  if (open.length === 0) return null;
+  if (!fileKey(file)) return open[open.length - 1];
+  await Promise.all(open.filter(c => !c.file).map(lookupPluginFile));
+  return open.reverse().find(c => matchesFile(c.file, file)) || null;
+}
+
+async function evalViaPlugin(conn, code, retryCount = 0) {
+  if (!conn || conn.ws.readyState !== WebSocket.OPEN) {
     throw new Error('Plugin not connected. Start the Figma CLI Bridge plugin in Figma.');
   }
 
@@ -248,10 +282,10 @@ async function evalViaPlugin(code, retryCount = 0) {
       reject(new Error('Plugin execution timeout (25s)'));
     }, 25000); // 25s timeout to match plugin-side timeout
 
-    pluginPendingRequests.set(id, { resolve, reject, timeout, code, retryCount });
+    pluginPendingRequests.set(id, { resolve, reject, timeout, code, retryCount, conn });
 
     try {
-      pluginWs.send(JSON.stringify({
+      conn.ws.send(JSON.stringify({
         action: 'eval',
         id: id,
         code: code
@@ -264,57 +298,30 @@ async function evalViaPlugin(code, retryCount = 0) {
   });
 }
 
-// Batch eval via plugin (execute multiple codes, return all results)
-async function evalBatchViaPlugin(codes) {
-  if (!isPluginConnected()) {
-    throw new Error('Plugin not connected. Start the Figma CLI Bridge plugin in Figma.');
-  }
-
-  return new Promise((resolve, reject) => {
-    const id = ++pluginMsgId;
-    const timeout = setTimeout(() => {
-      pluginPendingRequests.delete(id);
-      reject(new Error('Plugin batch execution timeout (60s)'));
-    }, 60000); // 60s for batches
-
-    pluginPendingRequests.set(id, { resolve, reject, timeout, isBatch: true });
-
-    try {
-      pluginWs.send(JSON.stringify({
-        action: 'eval-batch',
-        id: id,
-        codes: codes
-      }));
-    } catch (sendError) {
-      clearTimeout(timeout);
-      pluginPendingRequests.delete(id);
-      reject(new Error(`Plugin batch send error: ${sendError.message}`));
-    }
-  });
-}
-
 // ============ UNIFIED EVAL ============
 
+const fileNotOpen = (file) => new Error(
+  `No connection to a Figma file matching "${file}". Open it in Figma` +
+  (MODE === 'plugin' ? ' and run Plugins → Development → FigCli there.' : '.')
+);
 
-async function executeEval(code) {
-  // Auto mode: prefer plugin if connected, fallback to CDP
-  if (MODE === 'auto') {
-    if (isPluginConnected()) {
-      // Plugin handles its own wrapping, send code as-is
-      return evalViaPlugin(code);
+async function executeEval(code, file = null) {
+  // Plugin first (auto and plugin mode), handles its own wrapping
+  if (MODE !== 'cdp') {
+    const plugin = await pickPlugin(file);
+    if (plugin) return evalViaPlugin(plugin, code);
+    if (MODE === 'plugin') {
+      if (fileKey(file) && isPluginConnected()) throw fileNotOpen(file);
+      throw new Error('Plugin not connected. Start the Figma CLI Bridge plugin in Figma.');
     }
-    // CDP needs wrapping for top-level return statements
-    return evalViaCdp(wrapCodeIfNeeded(code));
   }
-
-  // Explicit mode
-  if (MODE === 'plugin') {
-    // Plugin handles its own wrapping
-    return evalViaPlugin(code);
+  // CDP needs wrapping for top-level return statements
+  try {
+    return await evalViaCdp(wrapCodeIfNeeded(code), file);
+  } catch (e) {
+    if (fileKey(file) && /No Figma design file open/.test(e.message)) throw fileNotOpen(file);
+    throw e;
   }
-
-  // CDP mode
-  return evalViaCdp(wrapCodeIfNeeded(code));
 }
 
 function getMode() {
@@ -322,8 +329,15 @@ function getMode() {
   if (MODE === 'cdp') return 'yolo';
   // Auto: return what's actually connected
   if (isPluginConnected()) return 'safe';
-  if (cdpClient) return 'yolo';
+  if (cdpClients.size > 0) return 'yolo';
   return 'disconnected';
+}
+
+/** Names of every file this daemon can reach right now. */
+function connectedFiles() {
+  const names = openPlugins().map(c => c.file).filter(Boolean);
+  for (const c of cdpClients.values()) if (isOpen(c) && c.pageTitle) names.push(c.pageTitle);
+  return [...new Set(names)];
 }
 
 // ============ HTTP SERVER ============
@@ -354,6 +368,8 @@ async function handleRequest(req, res) {
     const mode = getMode();
     const pluginConnected = isPluginConnected();
     const cdpHealthy = await isCdpHealthy();
+    const defaultCdp = cdpClients.get(fileKey(null));
+    const latestPlugin = openPlugins().pop();
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -364,7 +380,12 @@ async function handleRequest(req, res) {
       // Which open file this daemon is bound to. The CLI compares it against
       // FIGMA_FILE and rebinds when they diverge — otherwise commands silently
       // hit whichever file happened to be first when the daemon started.
-      file: (cdpClient && cdpClient.pageTitle) || null,
+      file: (defaultCdp && defaultCdp.pageTitle) || (latestPlugin && latestPlugin.file) || null,
+      // Every file reachable right now. multiFile tells the CLI that a request
+      // for another file is routed by its `file` field, so FIGMA_FILE no longer
+      // needs a daemon restart (which killed other agents' requests).
+      files: connectedFiles(),
+      multiFile: true,
       // Which figma-cli code this daemon runs. After an update the old daemon
       // would keep serving render-batch and eval with old code until it idles
       // out; the CLI restarts it when these do not match its own.
@@ -375,14 +396,12 @@ async function handleRequest(req, res) {
     return;
   }
 
-  // Force reconnect (CDP only)
-  if (req.url === '/reconnect') {
+  // Force reconnect (CDP only). ?file= reconnects that file's connection.
+  if (req.url === '/reconnect' || req.url.startsWith('/reconnect?')) {
     try {
-      if (cdpClient) {
-        try { cdpClient.close(); } catch {}
-        cdpClient = null;
-      }
-      await getCdpClient();
+      const file = new URL(req.url, 'http://localhost').searchParams.get('file');
+      dropCdpClient(file);
+      await getCdpClient(file);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'reconnected', mode: 'yolo' }));
     } catch (error) {
@@ -414,7 +433,7 @@ async function handleRequest(req, res) {
 
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const { action, code, jsx, jsxArray, gap, vertical, collection } = payload;
+          const { action, code, jsx, jsxArray, gap, vertical, collection, file } = payload;
           let result;
 
           const execWithTimeout = async (fn, timeoutMs = 30000) => {
@@ -428,14 +447,14 @@ async function handleRequest(req, res) {
 
           switch (action) {
             case 'eval':
-              result = await execWithTimeout(() => executeEval(code));
+              result = await execWithTimeout(() => executeEval(code, file));
               break;
             case 'render': {
               // Parse JSX to code, then execute via unified eval (works with both CDP and Plugin)
               const ClientClass = await getFigmaClient();
               const parser = new ClientClass();
-              const renderCode = await parser.parseJSX(jsx);
-              result = await execWithTimeout(() => executeEval(renderCode), 90000); // 90s for renders with icons
+              const renderCode = await parser.parseJSX(jsx, { page: payload.page || null });
+              result = await execWithTimeout(() => executeEval(renderCode, file), 90000); // 90s for renders with icons
               break;
             }
             case 'render-batch': {
@@ -445,9 +464,10 @@ async function handleRequest(req, res) {
               if (collection) batchParser.setCollection(collection);
               const batchCode = await batchParser.parseJSXBatch(jsxArray, {
                 gap: gap || 40,
-                vertical: vertical || false
+                vertical: vertical || false,
+                page: payload.page || null
               });
-              result = await execWithTimeout(() => executeEval(batchCode), 60000); // 60s for batches
+              result = await execWithTimeout(() => executeEval(batchCode, file), 60000); // 60s for batches
               break;
             }
             default:
@@ -486,21 +506,18 @@ async function handleRequest(req, res) {
           // itself — retrying would just re-run it (and a timed-out render
           // would create duplicate nodes).
           if (attempt < MAX_RETRIES && MODE !== 'plugin' && !isPluginConnected()) {
-            if (await isCdpHealthy(true)) {
+            if (await isCdpHealthy(true, payload.file)) {
               console.log('[daemon] CDP healthy — error is not connection-related, not retrying');
               break;
             }
             console.log('[daemon] Reconnecting CDP before retry...');
             // Don't tear down a connection another request is currently building
-            if (!isCdpConnecting) {
-              try { if (cdpClient) cdpClient.close(); } catch {}
-              cdpClient = null;
-            }
+            if (!cdpConnecting.has(fileKey(payload.file))) dropCdpClient(payload.file);
             // Backoff: 300ms after first failure, 1s after second
             await new Promise(r => setTimeout(r, attempt === 0 ? 300 : 1000));
             try {
-              await getCdpClient();
-              if (!(await isCdpHealthy(true))) {
+              await getCdpClient(payload.file);
+              if (!(await isCdpHealthy(true, payload.file))) {
                 console.log('[daemon] CDP still unhealthy after reconnect');
               }
             } catch (reconnectError) {
@@ -529,7 +546,8 @@ const wss = new WebSocketServer({ server: httpServer, path: '/plugin' });
 
 wss.on('connection', (ws) => {
   console.log('[daemon] Plugin connected (Safe Mode)');
-  pluginWs = ws;
+  const conn = { ws, file: null, fileLookup: null };
+  pluginConns.add(conn);
   resetIdleTimer(); // Plugin connection counts as activity
 
   ws.on('message', (data) => {
@@ -539,6 +557,7 @@ wss.on('connection', (ws) => {
 
       if (msg.type === 'hello') {
         console.log(`[daemon] Plugin version: ${msg.version}`);
+        lookupPluginFile(conn).then(() => { if (conn.file) console.log(`[daemon] Plugin file: ${conn.file}`); });
       }
 
       if (msg.type === 'result') {
@@ -579,15 +598,16 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('[daemon] Plugin disconnected');
-    pluginWs = null;
+    console.log(`[daemon] Plugin disconnected${conn.file ? ` (${conn.file})` : ''}`);
+    pluginConns.delete(conn);
 
-    // Reject all pending requests
+    // Reject the requests this plugin had, not other files' requests
     for (const [id, pending] of pluginPendingRequests) {
+      if (pending.conn !== conn) continue;
       clearTimeout(pending.timeout);
       pending.reject(new Error('Plugin disconnected'));
+      pluginPendingRequests.delete(id);
     }
-    pluginPendingRequests.clear();
   });
 
   ws.on('error', (error) => {
@@ -627,8 +647,8 @@ process.on('SIGINT', shutdown);
 function shutdown() {
   console.log('[daemon] Shutting down...');
   if (idleTimer) clearTimeout(idleTimer);
-  if (cdpClient) cdpClient.close();
-  if (pluginWs) pluginWs.close();
+  for (const client of cdpClients.values()) { try { client.close(); } catch {} }
+  for (const conn of pluginConns) { try { conn.ws.close(); } catch {} }
   httpServer.close(() => process.exit(0));
   // Force exit after 3 seconds if graceful shutdown hangs
   setTimeout(() => process.exit(0), 3000);

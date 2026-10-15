@@ -61,7 +61,10 @@ Helpers available inside \`eval\` (they handle the Figma pitfalls for you):
   \`for (const v of (await $component('Name')).children) await $instance(v.id, '', {parent: frame})\`
 
 ## Writing: \`render\`
-- \`--page "Name"\` renders on that page and creates it when missing.
+- \`--page "Name"\` renders on that page and creates it when missing, without
+  switching the page the user looks at. Several agents can render at once: each
+  frame is placed when it is finished, so parallel renders never overlap. Several
+  open files: set \`FIGMA_FILE\` per agent; one daemon serves them all.
 - \`var:\` takes any variable by full name: \`bg="var:bgColor/muted"\`, \`color="var:fgColor/default"\`.
 - Styles by name: \`<Frame effectStyle="shadow/small">\`, \`<Text textStyle="Body/Medium">\`.
 - Existing components, any page: \`<Instance component="Button" variant="variant=danger, size=large" text="Delete" />\`

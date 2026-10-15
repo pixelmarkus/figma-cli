@@ -311,6 +311,12 @@ function isDaemonRunning(returnDetails = false, force = false) {
   }
 }
 
+// The file this CLI process works on (FIGMA_FILE). Sent with every request so
+// one daemon serves agents on different files at the same time.
+function pinnedFile() {
+  return (process.env.FIGMA_FILE || '').trim() || undefined;
+}
+
 // Send command to daemon (uses native fetch in Node 18+)
 async function daemonExec(action, data = {}, timeoutMs = 90000) {
   const token = getDaemonToken();
@@ -337,7 +343,7 @@ async function daemonExec(action, data = {}, timeoutMs = 90000) {
     const response = await fetch(`http://localhost:${DAEMON_PORT}/exec`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ action, ...data }),
+      body: JSON.stringify({ action, file: pinnedFile(), ...data }),
       signal: AbortSignal.timeout(timeoutMs)
     });
 
@@ -419,6 +425,9 @@ function daemonBoundFile() {
 function daemonPinMismatch() {
   const want = (process.env.FIGMA_FILE || '').trim();
   if (!want) return false;
+  // A multi-file daemon routes each request by its `file` field. Restarting
+  // it here would kill the requests other agents have in flight on other files.
+  if (_daemonHealthBody && _daemonHealthBody.multiFile) return false;
   const bound = daemonBoundFile();
   // Unknown binding (daemon just started, plugin mode) → don't churn.
   if (!bound) return false;
@@ -651,7 +660,7 @@ function figmaEvalSync(code) {
       // Don't wrap if already an IIFE or starts with return - plugin handles these
       // For simple expressions and multi-statement code, just pass through
       // The plugin will add return to the last statement
-      const payload = JSON.stringify({ action: 'eval', code: wrappedCode });
+      const payload = JSON.stringify({ action: 'eval', code: wrappedCode, file: pinnedFile() });
       const payloadFile = join(tmpdir(), `figma-payload-${Date.now()}.json`);
       writeFileSync(payloadFile, payload);
       const daemonToken = getDaemonToken();

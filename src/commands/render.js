@@ -14,7 +14,6 @@ import {
   daemonExec,
   detectWrapperSplit,
   fastEval,
-  figmaEvalSync,
   getFigmaClient,
   isDaemonRunning,
   unescapeShell
@@ -67,13 +66,6 @@ function printSummary(summary, fallbackName) {
 
 function printNotes(notes) {
   for (const n of notes || []) console.log(chalk.yellow('note: ' + n));
-}
-
-// --page: switch to the page (creating it when missing) before rendering.
-async function switchToPage(name) {
-  if (!name) return;
-  const { HELPERS_SOURCE } = await import('../lib/figma-helpers.js');
-  await daemonExec('eval', { code: `(async () => { ${HELPERS_SOURCE}\n const p = await globalThis.__figHelpers.page(${JSON.stringify(String(name))}); return p.id; })()` });
 }
 
 function printLayoutWarnings(warnings) {
@@ -171,43 +163,11 @@ async function verifyRendered(nodeId) {
 }
 
 
-// Helper: Get next free X position for smart positioning (horizontal)
-function getNextFreeX(gap = 100) {
-  try {
-    const result = figmaEvalSync(`(function() {
-      let maxX = 0;
-      figma.currentPage.children.forEach(n => {
-        maxX = Math.max(maxX, n.x + n.width);
-      });
-      return maxX;
-    })()`);
-    return (result || 0) + gap;
-  } catch {
-    return 0;
-  }
-}
-
-// Helper: Get next free Y position for smart positioning (vertical)
-function getNextFreeY(gap = 100) {
-  try {
-    const result = figmaEvalSync(`(function() {
-      let maxY = 0;
-      figma.currentPage.children.forEach(n => {
-        maxY = Math.max(maxY, n.y + n.height);
-      });
-      return maxY;
-    })()`);
-    return (result || 0) + gap;
-  } catch {
-    return 0;
-  }
-}
-
 program
   .command('render [jsx]')
   .description('Render JSX to Figma (use --as-component to also convert result to a Figma component)')
   .option('--parent <id>', 'Parent node ID')
-  .option('--page <name>', 'Render on this page (switches to it, creates it when missing)')
+  .option('--page <name>', 'Render on this page (creates it when missing; does not change the page you are looking at)')
   .option('-f, --file <path>', 'Read the JSX from a file (no shell quoting to get wrong)')
   .option('-x <n>', 'X position')
   .option('-y <n>', 'Y position')
@@ -223,7 +183,6 @@ program
     const jsx = options.file ? rawJsx : unescapeShell(rawJsx);
     warnUnknownProps([jsx]);
     await checkConnection();
-    await switchToPage(options.page);
 
     // Auto-split: if the caller passed a layout-only outer Frame with N child
     // Frames, treat it as render-batch. This is the canonical "N buttons / N
@@ -240,6 +199,7 @@ program
         ];
         if (options.asComponent) args.push('--as-component');
         if (options.collection) args.push('--collection', options.collection);
+        if (options.page) args.push('--page', options.page);
         await program.parseAsync(args, { from: 'user' });
         return;
       }
@@ -266,13 +226,11 @@ program
         }
       };
 
-      // Calculate smart position if not specified
+      // Smart position is decided inside Figma when the frame is finished
+      // (see __figHelpers.place). Reading the free x here, one call before the
+      // render, gave two agents rendering at the same time the same spot.
       let posX = options.x;
-      let posY = options.y !== undefined ? options.y : 0;
-
-      if (!options.parent && options.x === undefined && options.smartPosition !== false) {
-        posX = getNextFreeX();
-      }
+      if (posX === undefined && options.smartPosition === false) posX = 0;
 
       // ONE render path.
       //
@@ -290,8 +248,9 @@ program
       if (options.collection) client.setCollection(options.collection);
       const code = await client.parseJSX(jsx, {
         x: posX,
-        y: options.y !== undefined ? posY : undefined,
+        y: options.y,
         parent: options.parent,
+        page: options.page,
       });
       const result = await daemonExec('eval', { code });
       if (!result || !result.id) {
@@ -332,7 +291,7 @@ program
   .description('Render multiple JSX frames in a single call (fast). Pass --as-component to promote each rendered frame to a Figma Component.')
   .argument('[jsxArray]', 'JSON array of JSX strings, e.g. \'["<Frame>...</Frame>","<Frame>...</Frame>"]\'')
   .option('-f, --file <path>', 'Read the JSON array of JSX strings from a file')
-  .option('--page <name>', 'Render on this page (switches to it, creates it when missing)')
+  .option('--page <name>', 'Render on this page (creates it when missing; does not change the page you are looking at)')
   .option('-g, --gap <n>', 'Gap between frames', '40')
   .option('-d, --direction <dir>', 'Layout direction: row (horizontal) or col (vertical)', 'row')
   .option('--as-component', 'After rendering, convert each resulting frame to a Figma component')
@@ -342,7 +301,6 @@ program
   .action(async (jsxArrayStr, options) => {
     if (options.file) jsxArrayStr = readFileSync(options.file, 'utf8');
     if (!jsxArrayStr) { console.log(chalk.red('✗ Pass a JSON array of JSX strings or --file <path>')); return; }
-    await switchToPage(options.page);
     await checkConnection();
     try {
       const jsxArray = JSON.parse(jsxArrayStr);
@@ -360,6 +318,7 @@ program
         gap,
         vertical,
         collection: options.collection || undefined,
+        page: options.page || undefined,
       });
       // Unwrap the wrapped form returned when there are warnings to report.
       let unresolvedVars = null;

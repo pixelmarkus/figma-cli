@@ -11,7 +11,7 @@
 // Kept as a source string because it is evaluated in the Figma sandbox, not in
 // Node. It installs itself on globalThis and is idempotent per version.
 
-export const HELPERS_VERSION = 6;
+export const HELPERS_VERSION = 7;
 
 export const HELPERS_SOURCE = `
 if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}) {
@@ -59,13 +59,53 @@ if (!globalThis.__figHelpers || globalThis.__figHelpers.v !== ${HELPERS_VERSION}
     return [...swapped];
   };
 
-  // Page by name: switch to it, create it when missing.
-  H.page = async (name) => {
+  // Page by name, created when missing, WITHOUT switching to it. currentPage
+  // is one value shared by every agent on the file, so render --page appends
+  // to the page directly instead. Find and create run with no await between
+  // them, so two concurrent callers cannot both create the page.
+  H.pageNode = async (name) => {
     await loadPages();
     let p = figma.root.children.find(p => p.name === name);
     if (!p) { p = figma.createPage(); p.name = name; }
+    return p;
+  };
+
+  // Page by name: switch to it, create it when missing.
+  H.page = async (name) => {
+    const p = await H.pageNode(name);
     await figma.setCurrentPageAsync(p);
     return p;
+  };
+
+  // Smart positioning for concurrent renders. Figma interleaves evals at every
+  // await, so a render that measured the page when it STARTED lands on top of
+  // one that finished meanwhile. Instead a render registers its top-level
+  // frames as in flight, builds them, and places them when DONE: measure and
+  // move in one synchronous step, skipping frames other renders still build
+  // (their size is not final). The render that finishes later sees the earlier
+  // one at its final size and goes to its right.
+  H.inflight = globalThis.__figInflight || (globalThis.__figInflight = new Set());
+  H.nextX = (page, skip) => {
+    let maxRight = 0, any = false;
+    for (const n of page.children) {
+      if ((skip && skip.has(n.id)) || H.inflight.has(n.id)) continue;
+      any = true;
+      const right = n.x + (n.width || 0);
+      if (right > maxRight) maxRight = right;
+    }
+    return any ? Math.round(maxRight + 100) : 0;
+  };
+  // nodes: the finished top-level nodes, in order. Row: side by side from the
+  // free x. Col: stacked at the free x from y. single: keep the node's own y.
+  H.place = (page, nodes, { gap = 40, vertical = false, y = null } = {}) => {
+    const skip = new Set(nodes.map(n => n.id));
+    let x = H.nextX(page, skip), yy = y;
+    for (const n of nodes) {
+      n.x = x;
+      if (yy !== null) n.y = yy;
+      if (vertical) yy = (yy === null ? n.y : yy) + n.height + gap;
+      else x += n.width + gap;
+    }
   };
 
   let varIndex = null;
